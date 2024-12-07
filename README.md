@@ -130,7 +130,7 @@ Podendo classificadas nas seguintes categorias:
 <br> </br>
 
 
---- **Remote Code Execution (RCE)** ---
+--- **Remote Code Execution (RCE)** --- _(Classifico como RCE pois acredito que o atacante optaria por tentar explorar algum shell reverso ou RCE direto, via essas chamadas)_
 
 /shell.php?cmd=cat%20/etc/passwd 
 
@@ -141,6 +141,9 @@ Após realizar executar a triagem e analise inicial, foram identificadas 1.375 r
 
 Dentro desse volume de requisições **maliciosas**, foi possível identificar alguns itens que poderiamos utilizar para a remediação, como por exemplo, o alto volume de requisições enviadas pelo AS numero **396982** totalizando **37%** do volume total.
 ![image](https://github.com/user-attachments/assets/5be9b566-7cbb-42b5-bd7d-1ceca6134846)
+
+**AS Details:** (https://ipinfo.io/AS396982) 
+![image](https://github.com/user-attachments/assets/bc203b4d-9686-4290-b8b6-6667e4f4d674)
 
 
 Embora esse AS tenha um volume alto de requisições quando removido o filtro, e analisado os logs de forma geral, ele também apresenta um grande volume de requests, **22%**. 
@@ -165,30 +168,199 @@ Outro padrão interessante é que o ataque é executado em horário comercial, i
 ![image](https://github.com/user-attachments/assets/114fe846-51cb-4994-a314-1ae16a54bbbe)
 
 
-<h1>3.1 Riscos & Ameaças </h1>
+<h1>3. Identificação de Riscos e Desenvolvimento de Políticas</h1>
 
-<h1>4. Remediações </h1>
+<h2>3.1. Identificação de Riscos </h2>
+
+Após analisar a massa de dados, foi possível identificar alguns comportamentos atípicos, indicando tentativas de exploração e ataques direcionados para a aplicação.
+
+Os quais podemos destacar com base na analise os seguintes ataques:
+
+--- **Directory Traversal / Path Traversal** ---
+
+--- **XSS (Cross-Site Scripting)** ---
+
+--- **SQL Injection** ---
+
+--- **Remote Code Execution (RCE)** ---
 
 
-<h1>5. Implementações </h1>
+Existe inúmeras tecnologias e ferramentas de mercado para detectar e responder esses tpos de ataques, abaixo vou colocar sugestões de como mitigar cada vetor.
 
 
-<h1>6. Considerações Finais </h1>
+<h2>3.2. Desenvolvimento de Politicas </h2>
+
+Antes de implementar uma politica efetiva, para tentar responder o incidente da forma mais **rapida** possível, montaria uma estratégia com base nos dados analisados, levando em consideração que:
+
+<h3>// regras rápidas mas não tão inteligentes //</h3>
+
+1 - O atributo **ClientRequestReferer**, um unico referer é responsável por 83.5% das requisições. 
+Esse atribuito normalmente serve para indicar a "origem da navegação", ou página anterior que levou o client a acessar o recurso atual. Sabendo disso, com base somente nos logs desenvolveria uma regra de bloqueio da origem __http://hernandez.com__. Reforço que essa regra pode causar impactos em trafego legitimo. E precisaria de mais contexto para ter a certeza de que não se trata de uma origem confiavel.
+
+2 - O AS Number **396982**, similar a regra anterior, poderiamos criar uma regra para bloquear o tráfego oriundo desse AS, contudo, essa seria uma regra um pouco mais delicada, pois pode impactar um volume significativo de tráfego. Antes de aplicar também procuraria ter mais contexto _(histórico d+30 talvez)_.
+
+3 - Rate-limit
+Também seria interessante implementar algum mecanismo de rate-limit, analisaria se já utilzamos alguma ferramenta que tenha esse recurso como um WAF, e caso positivo realizaria a configuração na mesma. Contudo, vou apresentar abaixo na sessão 5.Implementação uma solução bem simples de ratelimit.
+
+<h3>// Regras com base nos riscos identificados //</h3>
+
+Com base nos riscos identificados poderiamos criar regras especificas para o cenário, como por exemplo:
+
+**Directory Traversal / Path Traversal**
+
+Mitigação: Valide e sanitize as entradas do usuário, removendo caracteres como "../.". Utilize caminhos absolutos e restrinja acessos a diretórios específicos,
+
+**XSS (Cross-Site Scripting)**
+
+Mitigação: Escape todas as saidas que envolvem codigo como (HTML, JavaScript, CSS) para evitar execução de scripts, já existem  bibliotecas de sanitização, como DOMPurify. Valide entradas, permitindo apenas formatos esperados.
+
+Outra recomendação que poderia auxiliar é configurar as politicas de CSP, _Content Security Policy_  para limitar scripts permitidos.
+
+**SQL Injection**
+
+Mitigação: É recomendado duas principais formas para mitigar SQL I, a primeira é validando e tratando as entradas, e outra prática q tem se tornado comum são as consultas parametrizadas (Prepared Statements) para que buscam evitar injeção direta de SQL.
+
+Também é interessante restringir as permissões no banco de dados (ex.: separação de leitura e escrita).
+
+**Remote Code Execution (RCE)**
+
+Mitigação: Sanar as entradas e validar antes de qualquer execução pelo sistema, s possível nunca utilizar funções como eval(), exec() ou os.system() para processar entradas de usuários.
+
+
+Por fim, recomendaria executar um teste de intrusão nas aplicações, para certificar que não há vetores de ataque, e se houver, detectar de forma proativa antes de explorações.
+Além de manter todos os componentes atualizados.
+
+
+<h1>5. Implementação</h1>
+
+Abaixo desenvolvi um script em python que busca simular uma politica de segurança que mitigaria os ataques q detectamos na analise!
+Sei que o script/implementação pode ser MUITO melhor, mas, tentei fazer algo simples e rápido! 
+
+Utilizei o auxilio de IAs para o desenvolvimento, acredito que o uso dessas ferramentas podem potencializar MUITO nossos ganhos e aprendizagem! e também não sou um "grande" desenvolvedor hehehehe :D
+
+
+Como Funciona o script propost:
+
+O script simula as entradas de um proxy reverso basico, usando Flask:
+
+- Normalização de Caminhos:
+Decodifica entradas como %2E%2E%2F para detectar padrões maliciosos,
+
+- Filtro de Padrões Maliciosos:
+Verifica a URL contra uma lista de regex para identificar tentativas de XSS, Directory Traversal, RCE, ou SQL Injection (ataques vistos no cenário dos logs)
+
+- Rate Limiting: _(aproveitei para implementar um rate-limit bem basico)_
+Monitora o número de requisições por IP e aplica um limite baseado no tempo.
+
+- Possíveis Respostas:
+Bloqueia e retorna código 403 Forbidden para tráfego malicioso.
+Permite tráfego legítimo e retorna a URL normalizada.
+
+```python
+
+from flask import Flask, request, jsonify
+import re
+
+app = Flask(__name__)
+
+# Lista de padrões maliciosos
+MALICIOUS_PATTERNS = [
+    r"\.\./",  # Directory Traversal
+    r"%00|%2E%2E%2F",  # Codificação de caracteres
+    r"etc/passwd|boot.ini",  # Arquivos sensíveis
+    r"<script>|<iframe>|javascript:",  # XSS
+    r"cmd\.exe|shell\.php",  # RCE
+    r"' OR|--|;",  # SQL Injection
+]
+
+# Função para verificar padrões maliciosos
+def is_malicious(path):
+    for pattern in MALICIOUS_PATTERNS:
+        if re.search(pattern, path, re.IGNORECASE):
+            return True
+    return False
+
+# Função de normalização
+def normalize_path(path):
+    return re.sub(r"%[0-9a-fA-F]{2}", lambda x: chr(int(x.group(0)[1:], 16)), path)
+
+@app.route('/', defaults={'path': ''})
+@app.route('/<path:path>', methods=['GET', 'POST'])
+def analyze_request(path):
+    # Normalizar o caminho
+    normalized_path = normalize_path(path)
+    
+    # Checar se o caminho é malicioso
+    if is_malicious(normalized_path):
+        return jsonify({"status": "blocked", "reason": "Malicious pattern detected"}), 403
+    
+    # Continuar para o destino (simulado)
+    return jsonify({"status": "allowed", "path": normalized_path})
+
+# Rate Limiting (Simples)
+REQUEST_COUNT = {}
+RATE_LIMIT = 10  # Máximo de 10 requisições por minuto
+TIME_WINDOW = 60  # Janela de tempo em segundos
+
+@app.before_request
+def rate_limit():
+    ip = request.remote_addr
+    if ip not in REQUEST_COUNT:
+        REQUEST_COUNT[ip] = []
+    
+    # Registrar timestamp da requisição
+    now = time.time()
+    REQUEST_COUNT[ip].append(now)
+    
+    # Remover requisições fora da janela de tempo
+    REQUEST_COUNT[ip] = [t for t in REQUEST_COUNT[ip] if now - t < TIME_WINDOW]
+    
+    # Bloquear se ultrapassar o limite
+    if len(REQUEST_COUNT[ip]) > RATE_LIMIT:
+        return jsonify({"status": "blocked", "reason": "Rate limit exceeded"}), 429
+
+if __name__ == '__main__':
+    app.run(debug=True)
+
+
+```
+
+Entendo que poderiamos melhorar muito a solução que foi implementada, com mais tempo.
+Mas algumas sugestões são: carregar os patterns maliciosos a partir de um JSON alimentado com alguma IA, ou até mesmo uma lista integrada com um SIEM ou MISP ou alguma fonte de IOCS. 
+
+``` python
+# Carregar padrões de um arquivo JSON
+import json
+
+with open("patterns.json", "r") as f:
+    attack_patterns = json.load(f)
+```
+
+Outra possíbilidade interessante seria utilizar IA mesmo, com um modelo treinado de machine learning para identificar padrões anômalos em logs do ambiente, isso levaria um tempo de pesquisa e estudo para implementar, mas acredito que pode seguir uma linha de raciociono similar:
+
+Exemplo de abordagem:
+
+1 - Coletar logs legítimos e maliciosos.
+
+2 - Treinar um modelo simples como por exemplo a lib _scikit-learn_ para detectar anomalias.
+
+3 - Integrar o modelo à aplicação ou as ferramentas SIEM/SOAR para decisões dinâmicas.
+
+<h1>6. Considerações Finais / Inovações </h1>
+
+Bom, para finalizar, eu gostei do desafio.
+Busquei resolver visando um cenário real, com diversas sugestões, algumas para erradicar o incidente de forma mais rapida porém talvez com impactos para tráfegos legitimos e outras formas mais especifica.
+
+Embora acredite que em um cenário real, teriamos um aparato interessante de ferramentas para atuar como WAF, SIEM, SOAR etc, realizei o desafio com os recursos que possuia.
+
+Na implementação da solução busquei ser o mais prático possível, entendedo que, poderia ser melhorada. Também contei com o uso de IA para auxiliar no desenvolvimento do script, sendo a unica parte que optei por utilizar IA no auxilio do desafio, realizei a primeira versão do script e fui melhorando com IA.
+
+Pessoal, agradeço a oportunidade e espero que a analise e solução proposta aqui para resolução atenda os requisitos!
+
+Tks pela oportunidade.
+Espero os próximos passos!
 
 
 ---------------------------------
 
-<h2>3.1. Análise de dados</h2>
-Analise completamente os dados de tráfego de rede fornecidos. Identifique padrões, anomalias e potenciais riscos de segurança. Documente claramente seu processo de análise e descobertas.
 
-<h2>3.2. Identificação de Riscos e Desenvolvimento de Políticas</h2>
-Com base em sua análise e conhecimento, identifique potenciais riscos de segurança e desenvolva uma política de segurança abrangente para mitigar ou prevenir esses riscos. Explique sua lógica por trás da política e como ela aborda os riscos identificados.
-
-<h2>3.3. Implementação</h2>
-Implemente uma solução que imponha a política de segurança. Isso pode ser na forma de um script ou programa que simula como a política avaliaria e filtraria o tráfego de rede. Garanta que sua implementação seja adaptável a vários padrões de tráfego.
-
-<h2>3.4. Explicação e Documentação</h2>
-Forneça uma explicação clara de sua abordagem, incluindo como você analisou os dados, identificou riscos e desenvolveu a política de segurança. Certifique-se de destacar seu pensamento lógico e soluções inovadoras.
-
-<h2>3.5. Inovação</h2>
-Considere adicionar recursos ou melhorias que vão além dos requisitos básicos. Como você pode melhorar a eficácia, eficiência e adaptabilidade da sua política de segurança? Quais outras tecnologias você poderia aplicar? Como você poderia aplicar IA neste caso? Seja criativo e pense fora da caixa!
